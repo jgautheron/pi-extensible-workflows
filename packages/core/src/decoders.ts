@@ -1,5 +1,6 @@
-import { AGENT_STATES, BUDGET_DIMENSIONS, BUDGET_EVENT_TYPES, RUN_STATES, isContextFileScope, type AgentAccounting, type AgentActivity, type AgentAttemptSummary, type AgentContinuity, type PreparedAgentConfiguration, LAUNCH_SNAPSHOT_IDENTITY_VERSION, type AgentRecord, type AgentResourceInspection, type AgentResourceSelectors, type BudgetApprovalRequest, type BudgetDimension, type BudgetEvent, type BudgetEventType, type ContextFileScope, type JsonValue, type LaunchSnapshot, type ModelSpec, type RunRecord, type WorkflowBudgetUsage, type WorkflowExtensionSettings, type WorkflowRetentionSettings, type WorkflowRunEvent } from "./types.js";
+import { AGENT_STATES, BUDGET_DIMENSIONS, BUDGET_EVENT_TYPES, RUN_STATES, isContextFileScope, type AgentAccounting, type AgentActivity, type AgentAttemptError, type AgentAttemptSummary, type AgentContinuity, type PreparedAgentConfiguration, LAUNCH_SNAPSHOT_IDENTITY_VERSION, type AgentRecord, type AgentResourceInspection, type AgentResourceSelectors, type BudgetApprovalRequest, type BudgetDimension, type BudgetEvent, type BudgetEventType, type ContextFileScope, type JsonValue, type LaunchSnapshot, type ModelSpec, type RunRecord, type WorkflowBudgetUsage, type WorkflowExtensionSettings, type WorkflowRetentionSettings, type WorkflowRunEvent } from "./types.js";
 import { validAgentSpeed } from "./agent-speed.js";
+import { decodeProviderError } from "./provider-error.js";
 import type { OwnershipRecord, ScheduledAgentOptions } from "./agent-execution.js";
 import { finiteNumber, isThinkingLevel, isWorkflowErrorCode, jsonValue, object, positiveInteger, validWorkflowExtensionNamespace } from "./utils.js";
 
@@ -284,15 +285,17 @@ function decodeAgentSetupSummary(value: unknown): NonNullable<NonNullable<AgentR
   if (!hookNames || !tools || !model || value.resourceSelectors !== undefined && !resourceSelectors) return undefined;
   return { hookNames, model, tools, cwd: value.cwd, ...(resourceSelectors === undefined ? {} : { resourceSelectors }) };
 }
-function decodeAttemptError(value: unknown): NonNullable<NonNullable<AgentRecord["attemptDetails"]>[number]["error"]> | undefined {
+export function decodeAgentError(value: unknown): AgentAttemptError | undefined {
   if (!object(value) || typeof value.code !== "string" || typeof value.message !== "string") return undefined;
-  return { code: value.code, message: value.message };
+  const provider = decodeProviderError(value.provider);
+  if (value.provider !== undefined && !provider) return undefined;
+  return { code: value.code, message: value.message, ...(provider ? { provider } : {}) };
 }
 function decodeAgentAttempt(value: unknown): AgentAttemptSummary | undefined {
   if (!object(value) || !positiveInteger(value.attempt) || typeof value.transport !== "string") return undefined;
   const session = value.session === undefined ? undefined : decodeAgentSession(value.session);
   const setup = decodeAgentSetupSummary(value.setup);
-  const error = value.error === undefined ? undefined : decodeAttemptError(value.error);
+  const error = value.error === undefined ? undefined : decodeAgentError(value.error);
   const accounting = decodeAgentAccounting(value.accounting);
   if (!setup || !accounting || value.session !== undefined && !session || value.error !== undefined && !error) return undefined;
   return { attempt: value.attempt, transport: value.transport, setup, accounting, ...(session === undefined ? {} : { session }), ...(error === undefined ? {} : { error }) };
@@ -358,11 +361,12 @@ function decodeRetry(value: unknown): NonNullable<RunRecord["retry"]> | undefine
   return { sourceRunId: value.sourceRunId, lineageRootRunId: value.lineageRootRunId, completedPaths, incompletePaths, namedWorktrees };
 }
 function decodeWorkflowError(value: unknown): NonNullable<RunRecord["error"]> | undefined {
-  if (!object(value) || typeof value.code !== "string" || typeof value.message !== "string") return undefined;
-  const code = isWorkflowErrorCode(value.code) ? value.code : "INTERNAL_ERROR";
+  if (!object(value)) return undefined;
+  const error = decodeAgentError(value);
   const failedAt = optionalString(value.failedAt);
-  if (failedAt === INVALID_PERSISTED_VALUE) return undefined;
-  return { code, message: value.message, ...(failedAt === undefined ? {} : { failedAt }) };
+  if (!error || failedAt === INVALID_PERSISTED_VALUE) return undefined;
+  const code = isWorkflowErrorCode(error.code) ? error.code : "INTERNAL_ERROR";
+  return { ...error, code, ...(failedAt === undefined ? {} : { failedAt }) };
 }
 function decodeUsage(value: unknown): WorkflowBudgetUsage | undefined {
   if (!object(value) || !finiteNumber(value.tokens) || !finiteNumber(value.costUsd) || !finiteNumber(value.durationMs) || !finiteNumber(value.agentLaunches)) return undefined;

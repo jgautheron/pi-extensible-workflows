@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import { structuralPath as operationPath, type PersistedRun, type RunStore } from "./persistence.js";
 import { ERROR_CODES, WorkflowError, type JsonValue, type WorkflowErrorCode, type WorkflowFailureAgent, type WorkflowFailureDiagnostics, type WorkflowMetadata, type WorkflowSiblingAgent } from "./types.js";
-import { errorCode, errorText, fail, isWorkflowAuthored, object, SerialLane } from "./utils.js";
+import { errorCode, errorText, fail, isWorkflowAuthored, object, providerErrorFields, SerialLane } from "./utils.js";
 const FAILURE_DELIVERY_STATES: ReadonlySet<PersistedRun["state"]> = new Set(["failed", "stopped", "interrupted", "budget_exhausted"]);
 
 export type ForegroundDetachResult = { runId: string; state: "running"; detached: true; run: PersistedRun };
@@ -227,7 +227,7 @@ function boundedWorkflowFailureDiagnostics(value: WorkflowFailureDiagnostics): W
     workflowName: utf8Prefix(value.workflowName, 256),
     state: value.state,
     failedAt: value.failedAt === null ? null : utf8Prefix(value.failedAt, 1024),
-    error: { code: value.error.code, message: utf8Prefix(value.error.message, 1024) },
+    error: { code: value.error.code, message: utf8Prefix(value.error.message, 1024), ...(value.error.provider ? { provider: value.error.provider } : {}) },
     ...(value.failedAgent ? { failedAgent: {
       id: utf8Prefix(value.failedAgent.id, 128),
       ...(value.failedAgent.label ? { label: utf8Prefix(value.failedAgent.label, 128) } : {}),
@@ -266,6 +266,8 @@ function boundedWorkflowFailureDiagnostics(value: WorkflowFailureDiagnostics): W
     if (bounded.failedAgent?.structuralPath.some((part) => Buffer.byteLength(part) > 64)) { bounded = { ...bounded, failedAgent: { ...bounded.failedAgent, structuralPath: bounded.failedAgent.structuralPath.map((part) => utf8Prefix(part, 64)) } }; continue; }
     if (Buffer.byteLength(bounded.artifacts.statePath) > 512 || Buffer.byteLength(bounded.artifacts.journalPath) > 512) { bounded = { ...bounded, artifacts: { ...bounded.artifacts, statePath: utf8Prefix(bounded.artifacts.statePath, 512), journalPath: utf8Prefix(bounded.artifacts.journalPath, 512) } }; continue; }
     if (Buffer.byteLength(bounded.workflowName) > 128) { bounded = { ...bounded, workflowName: utf8Prefix(bounded.workflowName, 128) }; continue; }
+    // Don't truncate response ids: the original remains in the persisted run error.
+    if (bounded.error.provider) { delete bounded.error.provider; continue; }
     break;
   }
   return bounded;
@@ -322,7 +324,7 @@ export async function createWorkflowFailureDiagnostics(store: RunStore, metadata
   } : undefined;
   return boundedWorkflowFailureDiagnostics({
     runId: run.id, workflowName: metadata.name, state: run.state, failedAt,
-    error: { code: errorCode(error) ?? "INTERNAL_ERROR", message: errorText(error) || "The workflow failed without an error message." },
+    error: { code: errorCode(error) ?? "INTERNAL_ERROR", message: errorText(error) || "The workflow failed without an error message.", ...providerErrorFields(error) },
     ...(failedAgent ? { failedAgent } : {}), completedSiblingAgents, completedSiblingPaths,
     ...(retry ? { retry } : {}),
     artifacts: { runDirectory: store.directory, statePath: join(store.directory, "state.json"), journalPath: join(store.directory, "journal.json") },

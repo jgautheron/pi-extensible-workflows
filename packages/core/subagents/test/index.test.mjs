@@ -24,6 +24,7 @@ import extension, {
 import { getSubagentManager } from "../../dist/src/subagent-manager-handle.js";
 import { registerSubagentNavigator } from "../../dist/subagents/src/navigator.js";
 import { choose, escapes, fakePi, KEY, shown, workspaceOpen } from "../../dist/test/agents-workspace-harness.js";
+import { testTransport } from "../../dist/test/test-transport.js";
 
 const toolNames = [
   "subagents_run",
@@ -1453,6 +1454,67 @@ test("persists failed background subagents for repeatable lookup", async () => {
     await rm(cwd, { recursive: true, force: true });
   }
 });
+for (const responseId of ["gen-synthetic-refusal", undefined]) {
+  test(`subagent provider refusal ${responseId ? "with" : "without"} a response id reaches the parent and persists`, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "subagents-provider-refusal-"));
+    const storageDir = join(cwd, "subagents-storage");
+    const prompt = "PRIVATE-PROMPT";
+    const fixture = "PRIVATE-FIXTURE-CONTENT";
+    const token = "sk-test-NOT-A-SECRET";
+    const message = "Request refused by the provider";
+    const identity = { provider: "openrouter", model: "recorded/model" };
+    const generation = responseId === undefined ? {} : { responseId };
+    const expectedError = { code: "AGENT_FAILED", message, provider: { ...identity, ...generation, stopReason: "error", disposition: "unknown" } };
+    let sessions = 0;
+    const prompts = [];
+    const transport = testTransport(async () => ({
+      sessionId: `refusal-${String(++sessions)}`,
+      messages: [
+        { role: "assistant", responseId: "gen-older-turn", content: [{ type: "toolCall", arguments: { fixture } }] },
+        { role: "user", content: prompt },
+        { role: "assistant", ...identity, ...generation, stopReason: "error", errorMessage: message,
+          content: [{ type: "text", text: fixture }], headers: { authorization: `Bearer ${token}` },
+          diagnostics: [{ type: "provider_failure", details: { body: { fixture, token } } }],
+        },
+      ],
+      getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
+      async prompt(text) { prompts.push(text); },
+      dispose() {},
+    }));
+    const manager = createSubagentManager({ storageDir, transport });
+    const restarted = createSubagentManager({ storageDir });
+    try {
+      const context = await executionContext(cwd);
+      const runTool = createSubagentTools(manager)[0];
+      const parent = await runTool.execute("refusal", { prompt, mode: "foreground" }, undefined, undefined, context);
+      assert.equal(parent.details.state, "failed");
+      assert.deepEqual(parent.structuredContent.error, expectedError);
+      assert.ok(Value.Check(runTool.outputSchema, parent.structuredContent));
+      assert.equal(sessions, 1);
+      assert.deepEqual(prompts, [prompt]);
+
+      const directory = join(storageDir, parent.details.id);
+      const statusText = await readFile(join(directory, "status.json"), "utf8");
+      const failureText = await readFile(join(directory, "failure.json"), "utf8");
+      const status = JSON.parse(statusText);
+      assert.deepEqual(status.error, expectedError);
+      assert.equal(status.attempts, 1);
+      assert.deepEqual(status.attemptDetails.map((attempt) => attempt.error), [expectedError]);
+      assert.deepEqual(JSON.parse(failureText), expectedError);
+      const lookedUp = await restarted.inspect({ id: parent.details.id }, { ...await managerContext(cwd), includeAttemptMetadata: true });
+      assert.deepEqual(lookedUp.error, expectedError);
+      assert.deepEqual(lookedUp.attemptDetails.map((attempt) => attempt.error), [expectedError]);
+      for (const serialized of [JSON.stringify(parent), statusText, failureText]) {
+        for (const privateText of [prompt, fixture, token]) assert.equal(serialized.includes(privateText), false);
+      }
+    } finally {
+      await restarted.dispose();
+      await manager.dispose();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
 test("reconciles orphaned running records after a manager restart", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "subagents-background-orphan-"));
   const storageDir = join(cwd, "subagents-storage");

@@ -7,11 +7,12 @@ import { RunStore, structuralPath as operationPath } from "./persistence.js";
 import type { AgentAttempt } from "./agent-execution.js";
 import type { AgentIdentity, AgentAttemptSummary, FunctionIdentity, JsonValue, ShellIdentity, ShellOptions, ShellResult, ToolIdentity, WorkflowAgentSessionReference, WorkflowBridge, WorkflowErrorCode, WorkflowExecution, WorkflowFunctionContext } from "./types.js";
 import { WorkflowError, sumAccounting, zeroAccounting } from "./types.js";
-import { asWorkflowError, errorText, fail, isWorkflowAuthored, isWorkflowErrorCode, jsonDigest, jsonValue, markWorkflowAuthored, object, positiveInteger } from "./utils.js";
+import { asWorkflowError, errorText, fail, isWorkflowAuthored, isWorkflowErrorCode, jsonDigest, jsonValue, markWorkflowAuthored, object, positiveInteger, providerErrorFields } from "./utils.js";
+import { decodeProviderError, type WorkflowProviderError } from "./provider-error.js";
 import { instrumentWorkflow, validateAgentOptions, validateShellCommand, validateShellOptions } from "./validation.js";
 
 export const RPC_LIMIT_BYTES = 10 * 1024 * 1024;
-type WorkerErrorShape = { code?: string; message: string; authored?: boolean; failedAt?: string };
+type WorkerErrorShape = { code?: string; message: string; provider?: WorkflowProviderError; authored?: boolean; failedAt?: string };
 export const HEARTBEAT_TIMEOUT_MS = 5000;
 type RpcMessage =
   | { type: "heartbeat" }
@@ -23,7 +24,7 @@ type RpcMessage =
   | { type: "cancel" };
 function hasOwn(value: object, key: string): boolean { return Object.prototype.hasOwnProperty.call(value, key); }
 function isWorkerErrorShape(value: unknown): value is WorkerErrorShape {
-  return object(value) && typeof value.message === "string" && (value.code === undefined || typeof value.code === "string") && (value.authored === undefined || typeof value.authored === "boolean") && (value.failedAt === undefined || typeof value.failedAt === "string");
+  return object(value) && typeof value.message === "string" && (value.code === undefined || typeof value.code === "string") && (value.authored === undefined || typeof value.authored === "boolean") && (value.failedAt === undefined || typeof value.failedAt === "string") && (value.provider === undefined || decodeProviderError(value.provider) !== undefined);
 }
 function isRpcMessage(value: unknown): value is RpcMessage {
   if (!object(value) || typeof value.type !== "string") return false;
@@ -97,7 +98,12 @@ const hasMessage = error => Boolean(error && typeof error === "object" && typeof
 const errorText = error => hasMessage(error) ? error.message : String(error);
 const errorCode = error => { if (!error || typeof error !== "object") return undefined; const code = error.code; return typeof code === "string" ? code : undefined; };
 const errorAuthored = error => Boolean(error && typeof error === "object" && error.authored === true);
-const workerError = error => { const code = errorCode(error); return { code: code || "INTERNAL_ERROR", message: errorText(error), ...(error && typeof error === "object" && typeof error.failedAt === "string" ? { failedAt: error.failedAt } : {}), ...(errorAuthored(error) || hasMessage(error) && !code ? { authored: true } : {}) }; };
+const decodeProviderError = (${decodeProviderError.toString()});
+const workerError = error => {
+  const code = errorCode(error);
+  const provider = error && typeof error === "object" ? decodeProviderError(error.provider) : undefined;
+  return { code: code || "INTERNAL_ERROR", message: errorText(error), ...(provider ? { provider } : {}), ...(error && typeof error === "object" && typeof error.failedAt === "string" ? { failedAt: error.failedAt } : {}), ...(errorAuthored(error) || hasMessage(error) && !code ? { authored: true } : {}) };
+};
 const workflowError = error => Object.assign(new Error(errorText(error)), workerError(error));
 function send(value) {
   const json = JSON.stringify(value);
@@ -529,13 +535,13 @@ export function executeShellCommand(command: string, options: ShellOptions, sign
     if (options.timeoutMs !== undefined) timeout = setTimeout(() => { timedOut = true; shellProcessKill(child); }, options.timeoutMs);
   });
 }
-/** The wire shape of a host-side failure: the code, the message, and the authored flag that tells the worker whether the text is safe to surface verbatim. */
+/** Only the error envelope crosses the wire, never the underlying error object. */
 function workerErrorShape(typed: WorkflowError): WorkerErrorShape {
-  return { code: typed.code, message: typed.message, ...(isWorkflowAuthored(typed) ? { authored: true } : {}) };
+  return { code: typed.code, message: typed.message, ...providerErrorFields(typed), ...(isWorkflowAuthored(typed) ? { authored: true } : {}) };
 }
 function workflowErrorFromWorker(error: WorkerErrorShape): WorkflowError {
   const code = isWorkflowErrorCode(error.code) ? error.code : "INTERNAL_ERROR";
-  const typed = markWorkflowAuthored(new WorkflowError(code, error.message), Boolean(error.authored) || error.code === undefined);
+  const typed = markWorkflowAuthored(new WorkflowError(code, error.message, error.provider), Boolean(error.authored) || error.code === undefined);
   return error.failedAt === undefined ? typed : Object.assign(typed, { failedAt: error.failedAt });
 }
 /** Forks the sandboxed worker in a new directory; a worker that cannot start leaves no directory behind. */

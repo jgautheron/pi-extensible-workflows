@@ -59,7 +59,19 @@ function runtimeUsage(session: WorkflowAgentSession): RuntimeUsage {
 function providerFailure(session: WorkflowAgentSession, message: WorkflowAgentMessage | undefined): RuntimeAgentProviderFailure | undefined {
   if (message?.stopReason !== "error") return undefined;
   const state = session.getState();
-  return { provider: state.model.provider, model: state.model.model, error: message.errorMessage ?? "Workflow agent session ended with a terminal provider error" };
+  return {
+    // Recovery still uses the session's selected model. Error metadata comes only from the record.
+    provider: state.model.provider,
+    model: state.model.model,
+    error: message.errorMessage ?? "Workflow agent session ended with a terminal provider error",
+    ...(message.role === "assistant" ? { metadata: {
+      ...(message.provider === undefined ? {} : { provider: message.provider }),
+      ...(message.model === undefined ? {} : { model: message.model }),
+      ...(message.responseId === undefined ? {} : { responseId: message.responseId }),
+      stopReason: message.stopReason,
+      disposition: "unknown" as const,
+    } } : {}),
+  };
 }
 
 function runtimeValue(value: JsonValue): RuntimeJsonValue { return value; }
@@ -118,7 +130,7 @@ export function isRuntimeAgentProviderError(error: unknown): error is RuntimeAge
 
 export function normalizePiRuntimeError(error: unknown, signal: AbortSignal, setupFailed = false): WorkflowError {
   if (error instanceof WorkflowError) return error;
-  if (error instanceof RuntimeAgentProviderError) return new WorkflowError("AGENT_FAILED", error.failure.error);
+  if (error instanceof RuntimeAgentProviderError) return new WorkflowError("AGENT_FAILED", error.failure.error, error.failure.metadata);
   return new WorkflowError(signal.aborted && setupFailed ? "CANCELLED" : "AGENT_FAILED", errorText(error));
 }
 

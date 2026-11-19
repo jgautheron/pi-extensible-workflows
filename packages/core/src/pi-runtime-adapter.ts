@@ -27,9 +27,15 @@ function normalizeMessage(value: unknown): WorkflowAgentMessage | undefined {
   const normalizedUsage = input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined || totalCost === undefined ? undefined : { input, output, cacheRead, cacheWrite, cost: { total: totalCost } };
   const stopReason = stringValue(candidate.stopReason);
   const errorMessage = stringValue(candidate.errorMessage);
+  const provider = role === "assistant" ? stringValue(candidate.provider) : undefined;
+  const model = role === "assistant" ? stringValue(candidate.model) : undefined;
+  const responseId = role === "assistant" ? stringValue(candidate.responseId) : undefined;
   return {
     role,
     ...(candidate.content === undefined ? {} : { content: candidate.content }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(model === undefined ? {} : { model }),
+    ...(responseId === undefined ? {} : { responseId }),
     ...(stopReason === undefined ? {} : { stopReason }),
     ...(errorMessage === undefined ? {} : { errorMessage }),
     ...(normalizedUsage === undefined ? {} : { usage: normalizedUsage }),

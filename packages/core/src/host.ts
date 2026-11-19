@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type, type Static, type TSchema } from "typebox";
+import { WORKFLOW_ERROR_OUTPUT } from "./provider-error.js";
 import { copyToClipboard, getAgentDir, ModelSelectorComponent, SettingsManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ExtensionToolContext, type ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { FairAgentScheduler, getAgentAttempts, WorkflowAgentExecutor, localAgentTransport, type AgentActivity, type AgentAttempt, type AgentExecutionRoot, type AgentProgress, type AgentProviderFailure, type AgentProviderRecovery } from "./agent-execution.js";
 import { RunLifecycle, WorkflowEventPublisher, evidenceBridge, hostSessionContext, nextNamedOccurrence, withWorkflowFunctions, withoutActiveShells, workflowRunContext, type WorkflowEventSink, type WorkflowRunRecord, type WorkflowToolUpdate } from "./host-runtime.js";
@@ -31,7 +32,7 @@ import { openAgentsWorkspace, type OpenAgentsWorkspace } from "./agents-workspac
 import { createSessionAgentsSource, type SessionAgentsScope } from "./session-agents.js";
 import { openSessionTranscript } from "./session-transcript.js";
 import { createTranscriptView } from "./transcript-components.js";
-import { HARD_TERMINAL_RUN_STATES, LAUNCH_SNAPSHOT_IDENTITY_VERSION, THINKING_LEVELS, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BLOCKED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WorkflowError, type WorkflowFunction, isContextFileScope, isExternallyEndedRunState, isHardTerminalRunState, type AgentAccounting, type AgentIdentity, type AgentRecord, type AgentResourcePolicy, type AgentTransport, type JsonValue, type LaunchSnapshot, type LiveSessionHandoff, type HardTerminalRunState, type ModelSpec, type PreparedAgentSession, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type ToolIdentity, type WorkflowAgentSession, type WorkflowErrorCode, type WorkflowMetadata, type WorkflowModelAliasResolverContext, type WorkflowSettings, type WorkflowScriptCall, type WorkflowSettingsResolution, type WorkflowWorktreeReference } from "./types.js";
+import { HARD_TERMINAL_RUN_STATES, LAUNCH_SNAPSHOT_IDENTITY_VERSION, THINKING_LEVELS, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BLOCKED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WorkflowError, type WorkflowFunction, isContextFileScope, isExternallyEndedRunState, isHardTerminalRunState, type AgentAccounting, type AgentIdentity, type AgentRecord, type AgentResourcePolicy, type AgentTransport, type JsonValue, type LaunchSnapshot, type LiveSessionHandoff, type HardTerminalRunState, type ModelSpec, type PreparedAgentSession, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type ToolIdentity, type WorkflowAgentSession, type WorkflowErrorCode, type WorkflowErrorShape, type WorkflowMetadata, type WorkflowModelAliasResolverContext, type WorkflowSettings, type WorkflowScriptCall, type WorkflowSettingsResolution, type WorkflowWorktreeReference } from "./types.js";
 import type { SubagentManagerContext } from "../subagents/src/contracts.js";
 import { SETTLED_AGENT_STATES, catalogResultValue, formatWorkflowCatalog, styledTextBlock, textBlock, workflowCatalogBlock, workflowControlCall, workflowControlResult, workflowProgressBlock, type WorkflowProgressRenderState } from "./host-view.js";
 import { DELIVERY_LIMIT_BYTES, ForegroundDeliveryController, markWorkflowFailureDiagnostics, WORKFLOW_LOG_ENTRY, completionDescriptor, completionDeliveryFromStore, createWorkflowFailureDiagnostics, failureDiagnosticsFrom, formatWorkflowFailure, formatWorkflowFailureDelivery, formatWorkflowFailureDeliveryFallback, formatWorkflowFailureDiagnostics, isWorkflowFailureDiagnostics, serializeWorkflowFailureDiagnostics, utf8Prefix, type CompletionDeliveryContext, type ForegroundDelivery, type ForegroundDetachResult, type WorkflowLogEntry } from "./host-delivery.js";
@@ -139,7 +140,6 @@ export const WORKFLOW_TOOL_PARAMETERS = Type.Object({
 export const WORKFLOW_STATUS_PARAMETERS = Type.Object({ runId: Type.String({ description: "Workflow run ID visible in the current project" }) }, { additionalProperties: false });
 export const WORKFLOW_RETRY_PARAMETERS = Type.Object({ runId: Type.String({ description: "Explicit failed workflow run ID" }), expectedState: Type.Optional(Type.String({ description: "Persisted source state observed before recovery" })), foreground: Type.Optional(Type.Boolean({ description: "Override the source launch mode for this recovery" })) });
 // Structured results codemode scripts receive instead of the JSON text; nested records stay loose so they cannot drift from persistence.
-const WORKFLOW_ERROR_OUTPUT = Type.Object({ code: Type.String(), message: Type.String() });
 const WORKFLOW_LAUNCH_OUTPUT = Type.Object({ runId: Type.String(), state: Type.String(), detached: Type.Optional(Type.Boolean()), value: Type.Optional(Type.Unknown()) });
 const WORKFLOW_STATUS_OUTPUT = Type.Object({ runId: Type.String(), workflowName: Type.String(), state: Type.String(), error: Type.Optional(WORKFLOW_ERROR_OUTPUT), failedAt: Type.Optional(Type.String()), budget: Type.Optional(Type.Unknown()), usage: Type.Optional(Type.Unknown()), phase: Type.Optional(Type.String()), delivery: Type.Optional(Type.Object({ mode: Type.String(), state: Type.String() })), agents: Type.Array(Type.Object({ id: Type.String(), label: Type.Optional(Type.String()), path: Type.String(), state: Type.String(), lastEventAt: Type.Optional(Type.Number()), accounting: Type.Optional(Type.Unknown()) })) });
 const WORKFLOW_STOP_OUTPUT = Type.Object({ runId: Type.String(), state: Type.String(), stopped: Type.Boolean(), reason: Type.Optional(Type.String()) });
@@ -884,7 +884,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
     return { runId, state: "stopped", stopped: true };
   };
   type WorkflowStatusAgent = { id: string; label?: string; path: string; state: AgentRecord["state"]; lastEventAt?: number; accounting?: AgentAccounting };
-  type WorkflowStatusResult = { runId: string; workflowName: string; state: RunState; error?: { code: WorkflowErrorCode; message: string }; failedAt?: string; budget?: NonNullable<PersistedRun["budget"]>; usage?: NonNullable<PersistedRun["usage"]>; phase?: string; delivery?: Pick<NonNullable<PersistedRun["delivery"]>, "mode" | "state">; agents: readonly WorkflowStatusAgent[] };
+  type WorkflowStatusResult = { runId: string; workflowName: string; state: RunState; error?: Omit<WorkflowErrorShape, "failedAt">; failedAt?: string; budget?: NonNullable<PersistedRun["budget"]>; usage?: NonNullable<PersistedRun["usage"]>; phase?: string; delivery?: Pick<NonNullable<PersistedRun["delivery"]>, "mode" | "state">; agents: readonly WorkflowStatusAgent[] };
   const workflowStatusRun = async (runId: string, context: unknown): Promise<WorkflowStatusResult> => {
     const { cwd } = hostSessionContext(context);
     if (!cwd || !runId.trim()) throw new WorkflowError("RUN_NOT_FOUND", `Unknown workflow run ${runId} in the current project`);
@@ -896,7 +896,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
         const failedAt = run.failedAt ?? run.error?.failedAt;
         return {
           runId: run.id, workflowName: run.workflowName, state: run.state,
-          ...(run.error ? { error: { code: run.error.code, message: run.error.message } } : {}),
+          ...(run.error ? { error: { code: run.error.code, message: run.error.message, ...(run.error.provider ? { provider: run.error.provider } : {}) } } : {}),
           ...(failedAt ? { failedAt } : {}),
           ...(run.budget === undefined ? {} : { budget: run.budget, ...(run.usage === undefined ? {} : { usage: run.usage }) }),
           ...(run.phase ? { phase: run.phase } : {}),
@@ -1149,7 +1149,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
         const cancel = () => { scheduler.cancel(spawned.id); };
         if (agentSignal.aborted) cancel(); else agentSignal.addEventListener("abort", cancel, { once: true });
         const outcome = await spawned.result.finally(() => { agentSignal.removeEventListener("abort", cancel); });
-        if (!outcome.ok) throw new WorkflowError(outcome.error.code as WorkflowErrorCode, outcome.error.message);
+        if (!outcome.ok) throw new WorkflowError(outcome.error.code as WorkflowErrorCode, outcome.error.message, outcome.error.provider);
         await store.complete(path, outcome.value);
         scheduler.releaseResult(spawned.id);
         return outcome.value;
@@ -1239,7 +1239,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
       await deliveryController.deliverTerminal(store, completionDescriptor({ runId: run.id, ...(hasResult ? { resultPath } : {}), resultBytes }));
       return;
     }
-    const error = run.error ? new WorkflowError(run.error.code, run.error.message) : new WorkflowError(run.state === "stopped" ? "CANCELLED" : "INTERNAL_ERROR", `Workflow ${run.workflowName} ended in ${run.state} without an error`);
+    const error = run.error ? new WorkflowError(run.error.code, run.error.message, run.error.provider) : new WorkflowError(run.state === "stopped" ? "CANCELLED" : "INTERNAL_ERROR", `Workflow ${run.workflowName} ended in ${run.state} without an error`);
     await deliveryController.deliverTerminal(store, formatWorkflowFailureDeliveryFallback(run.workflowName, run.id, store.directory, error, run.state === "failed"), true);
   };
   pi.on("session_start", async (_event, ctx) => {

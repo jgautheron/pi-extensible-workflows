@@ -1,6 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { finiteNumber, jsonValue, parseThinking } from "../../src/utils.js";
 import { validAgentSpeed } from "../../src/agent-speed.js";
+import { decodeAgentError } from "../../src/decoders.js";
 import type { AgentAttemptSummary } from "../../src/types.js";
 import { SUBAGENT_ATTEMPT_DETAILS_LIMIT, type SubagentManagerContext, type SubagentProgress, type SubagentStatus } from "./contracts.js";
 
@@ -79,10 +80,7 @@ function sessionReferenceValue(value: unknown): AgentAttemptSummary["session"] |
   if (!record || typeof transport !== "string" || !transport.trim() || typeof sessionId !== "string" || !sessionId.trim()) return undefined;
   return { transport, sessionId, ...(record.locator === undefined || !jsonValue(record.locator) ? {} : { locator: record.locator }) };
 }
-export function subagentErrorValue(value: unknown): { readonly code: string; readonly message: string } | undefined {
-  const record = objectValue(value);
-  return record && typeof record.code === "string" && typeof record.message === "string" ? { code: record.code, message: record.message } : undefined;
-}
+export const subagentErrorValue = decodeAgentError;
 export function worktreeValue(value: unknown): { readonly path: string; readonly branch: string } | undefined {
   const record = objectValue(value);
   return record && typeof record.path === "string" && record.path.trim() && typeof record.branch === "string" && record.branch.trim() ? { path: record.path, branch: record.branch } : undefined;

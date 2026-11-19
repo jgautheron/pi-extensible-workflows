@@ -4,7 +4,7 @@ import { type ExtensionAPI, type ExtensionToolContext } from "@earendil-works/pi
 import { FairAgentScheduler, WorkflowAgentExecutor, type AgentExecutionRoot, type AgentProviderFailure, type AgentProviderRecovery } from "./agent-execution.js";
 import { listRunIds, RunStore, structuralPath as operationPath, type PersistedRun } from "./persistence.js";
 import { budgetUsage, budgetRelaxed, mergeBudget, resumeBudgetAllowed, validateBudget, validateBudgetPatch, WorkflowBudgetRuntime } from "./budget.js";
-import { aliasDrift, createLaunchSnapshot, errorCode, errorText, jsonValue, object } from "./utils.js";
+import { aliasDrift, createLaunchSnapshot, errorCode, errorText, jsonValue, object, providerErrorFields } from "./utils.js";
 import { LAUNCH_SNAPSHOT_IDENTITY_VERSION, WorkflowError, isExternallyEndedRunState, type AgentIdentity, type AgentResourcePolicy, type BudgetApprovalRequest, type JsonValue, type LaunchSnapshot, type ModelSpec, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type ToolIdentity, type WorkflowExtensionSettings, type WorkflowMetadata, type WorkflowRetryProvenance, type WorkflowWorktreeReference } from "./types.js";
 import { type WorkflowRegistryApi } from "./registry.js";
 import { RunLifecycle, WorkflowEventPublisher, evidenceBridge, hostSessionContext, withWorkflowFunctions, withoutActiveShells, workflowRunContext, type WorkflowRunRecord, type WorkflowToolUpdate } from "./host-runtime.js";
@@ -68,7 +68,7 @@ function assertResumableSnapshot(snapshot: Readonly<LaunchSnapshot>): void {
 function assertExpectedWorkflowState(expectedState: string | undefined, actualState: RunState): void {
   if (expectedState !== undefined && expectedState !== actualState) throw new WorkflowError("RESUME_INCOMPATIBLE", `Workflow run state changed: expected state ${expectedState}, actual state ${actualState}`);
 }
-export function persistedFailure(run: PersistedRun, error: WorkflowError): PersistedRun { const failedAt = workflowFailedAt(error); return { ...run, error: { code: error.code, message: error.message, ...(failedAt ? { failedAt } : {}) }, ...(failedAt ? { failedAt } : {}) }; }
+export function persistedFailure(run: PersistedRun, error: WorkflowError): PersistedRun { const failedAt = workflowFailedAt(error); return { ...run, error: { code: error.code, message: error.message, ...providerErrorFields(error), ...(failedAt ? { failedAt } : {}) }, ...(failedAt ? { failedAt } : {}) }; }
 
 export function createWorkflowRecovery(deps: WorkflowRecoveryDependencies) {
   const { pi, home, runs, scheduler, eventPublisher, persistRunState, projectTrusted, resumeHostContext, ensureSessionLease, createAgentExecutor, activeSnapshotTools, frozenResourcePolicy, resolveLaunchPrologue, workflowAgentHandler, shellForRun, toolForRun, resolveWorktree, checkpointBridge, phaseBridge, logBridge, lifecycleFor, createProviderErrorRecovery, cleanupTerminalRun, deliver, deliverTerminal, trackDelivery, workflowToolUpdate, registry, modelSpec } = deps;

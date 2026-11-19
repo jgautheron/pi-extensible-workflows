@@ -9,7 +9,7 @@ import { Compile } from "typebox/compile";
 import { createAgentSession, createCodemodeExtension, createMcpExtension, createToolSearchExtension, DefaultPackageManager, DefaultResourceLoader, defineTool, getAgentDir, ModelRuntime, SessionManager, SettingsManager, loadSkills, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext, ModelRegistry, ToolDefinition } from "@earendil-works/pi-coding-agent";
 type HerdrModelContext = { readonly model: ExtensionContext["model"]; readonly modelRegistry: ModelRegistry | undefined };
-type AgentMessage = { role: string; content?: unknown; stopReason?: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: { total: number } } };
+type AgentMessage = WorkflowAgentMessage;
 type LocalSessionShutdownReason = "quit" | "resume";
 export interface PiSession {
   readonly sessionId: string;
@@ -47,14 +47,15 @@ export interface PiResourceInspection {
   readonly systemPromptSource?: string;
 }
 import type { AgentPreparation, AgentPreparationContext, PreparedAgentConfiguration, RegisteredAgentPreparationHook, AgentAccounting, AgentActivity, AgentContinuity, AgentIdentity, AgentResourceInspection, AgentResourcePolicy, AgentResourceSelectors, AgentResourceSelectorSources, AgentSetup, AgentSetupSummary, AgentTransport, AgentTransportContext, ContextFileScope, JsonSchema, JsonValue, LiveSessionHandoff, ModelSpec, PiRuntimeLaunchInfo, PreparedAgentSession, RegisteredAgentSetupHook, SessionInput, WorkflowAgentMessage, WorkflowAgentSession, WorkflowAgentSessionEvent, WorkflowAgentSessionReference, WorkflowAgentSessionState, WorkflowAgentSessionStats, WorkflowAgentTurnResult, WorkflowExtensionSettings, WorkflowExtensionSettingsValidatorContext, WorkflowRunContext, WorkflowSessionStartEvent } from "./types.js";
-import { SerialLane, assertModelThinking, byPriorityThenName, deepFreeze, errorCode, errorText, jsonObject, jsonValue, object, physicalModel, resolveModelReference, resourcePatternHasMagic, selectResourcesByLayers, modelCapability, unmatchedResourcePatterns } from "./utils.js";
-import { SETTLED_AGENT_STATES, WorkflowError, isContextFileScope, zeroAccounting, type AgentState, type WorkflowErrorCode } from "./types.js";
+import { SerialLane, assertModelThinking, byPriorityThenName, deepFreeze, errorCode, errorText, jsonObject, jsonValue, object, physicalModel, providerErrorFields, resolveModelReference, resourcePatternHasMagic, selectResourcesByLayers, modelCapability, unmatchedResourcePatterns } from "./utils.js";
+import { SETTLED_AGENT_STATES, WorkflowError, isContextFileScope, zeroAccounting, type AgentAttemptError, type AgentState, type WorkflowErrorCode } from "./types.js";
 import { createLiveSessionHandoff } from "./session-handoff.js";
 import { createToolTimingExtension } from "./tool-timing.js";
 import { isEmptyAbortedAssistant, normalizePiMessage, normalizePiSessionEvent, runtimeProgressToAgentProgress } from "./pi-runtime-adapter.js";
 import { createPiRuntimeAgentRunner, isRuntimeAgentProviderError, normalizePiRuntimeError } from "./pi-runtime-runner.js";
 import type { RuntimeAgentProgress, RuntimeUsage } from "./runtime/agent-runner.js";
 import { defaultWorkflowResultSchema } from "./runtime/workflow-result.js";
+import { WORKFLOW_ERROR_OUTPUT } from "./provider-error.js";
 import { isCoreAgentOption, validateAgentOptions, validateSchema } from "./validation.js";
 import { canonicalPath, extensionIdentity, piResourceContains, piResourcePath, sameFilesystemPath } from "./paths.js";
 import { canonicalExtensionSelector, validateContextFileScopes, validateSelectorList, validateWorkflowExtensionSettings } from "./settings.js";
@@ -144,7 +145,7 @@ export interface AgentExecutionRoot {
 }
 export interface AgentToolCallProgress { id: string; name: string; state: "running" | "completed" | "failed" }
 export interface AgentProgress { accounting: AgentAccounting; toolCalls: readonly AgentToolCallProgress[]; state?: WorkflowAgentSessionState; activity?: AgentActivity; lastEventAt?: number; persist: boolean }
-export interface AgentAttempt { attempt: number; transport: string; session?: WorkflowAgentSessionReference; liveSession?: WorkflowAgentSession; prepared?: Readonly<PreparedAgentSession>; handoff?: LiveSessionHandoff; result?: JsonValue; error?: { code: string; message: string }; accounting: AgentAccounting; setup: AgentSetupSummary }
+export interface AgentAttempt { attempt: number; transport: string; session?: WorkflowAgentSessionReference; liveSession?: WorkflowAgentSession; prepared?: Readonly<PreparedAgentSession>; handoff?: LiveSessionHandoff; result?: JsonValue; error?: AgentAttemptError; accounting: AgentAccounting; setup: AgentSetupSummary }
 export interface AgentExecutionResult { value: JsonValue; attempts: readonly AgentAttempt[]; cwd: string }
 
 function parseModel(value: string | undefined, fallback: ModelSpec, aliases: Readonly<Record<string, string>> = {}, knownModels?: ReadonlySet<string>, settingsPath?: string): ModelSpec {
@@ -1028,7 +1029,7 @@ export async function prepareAgentSetupForInspection(root: AgentExecutionRoot, t
   const configuration = await executor.prepare(options, root.cwd, root.runContext?.signal, "inspection");
   return prepareAgentSetup(root, transport, task, { ...options, label: configuration.label ?? options.label, configuration, capabilities: { tools: configuration.tools, skills: configuration.skills.slice(configuration.skills.lastIndexOf("!*") + 1), extensions: configuration.extensions.slice(configuration.extensions.lastIndexOf("!*") + 1) } }, configuration, root.cwd, 1, root.runContext?.signal, [], undefined, true);
 }
-function attemptRecord(transport: string, attempt: number, session: WorkflowAgentSession, setup: AgentSetupSummary, stats: AgentAccounting, result?: JsonValue, error?: { code: string; message: string }): AgentAttempt {
+function attemptRecord(transport: string, attempt: number, session: WorkflowAgentSession, setup: AgentSetupSummary, stats: AgentAccounting, result?: JsonValue, error?: AgentAttemptError): AgentAttempt {
   return { attempt, transport, session: session.reference, ...(result === undefined ? {} : { result }), ...(error ? { error } : {}), accounting: stats, setup };
 }
 const agentAttemptsByError = new WeakMap<Error, readonly AgentAttempt[]>();
@@ -1291,7 +1292,7 @@ export class WorkflowAgentExecutor {
             onFailure: async (failure, failedSession) => {
               releaseHandoff("attempt failed");
               const failedAccounting = withSpeed(accounting(failedSession.getSessionStats()));
-              const failedAttempt = attemptRecord(attemptSetup.transport.id, attempt, failedSession, setupSummary, failedAccounting, undefined, { code: failure.code, message: failure.message });
+              const failedAttempt = attemptRecord(attemptSetup.transport.id, attempt, failedSession, setupSummary, failedAccounting, undefined, { code: failure.code, message: failure.message, ...providerErrorFields(failure) });
               attempts.push(failedAttempt);
               try { await options.onAttempt?.(failedAttempt); }
               catch (error) { attemptCallbackFailure = error; throw error; }
@@ -1329,7 +1330,7 @@ export class WorkflowAgentExecutor {
               return requestInstruction && !final ? options.budget?.instruction() : undefined;
             },
           } } : {}),
-          ...(providerRecovery ? { onProviderError: (failure: { provider: string; model: string; error: string }) => providerRecovery({ label: options.label, ...failure }, attemptSignal) } : {}),
+          ...(providerRecovery ? { onProviderError: ({ provider, model, error }: { provider: string; model: string; error: string }) => providerRecovery({ label: options.label, provider, model, error }, attemptSignal) } : {}),
           ...(this.root.providerPause ? { onProviderLimit: this.root.providerPause } : {}),
         } as const;
         const result = await runner.run(runtimeRequest);
@@ -1341,7 +1342,7 @@ export class WorkflowAgentExecutor {
         const typed = normalizePiRuntimeError(error, attemptSignal, setupFailed);
         releaseHandoff("attempt failed");
         if (!session) {
-          const failedAttempt: AgentAttempt = { attempt, transport: setup?.transport.id ?? this.transport.id, accounting: zeroAccounting(), error: { code: typed.code, message: typed.message }, setup: setupSummary };
+          const failedAttempt: AgentAttempt = { attempt, transport: setup?.transport.id ?? this.transport.id, accounting: zeroAccounting(), error: { code: typed.code, message: typed.message, ...providerErrorFields(typed) }, setup: setupSummary };
           attempts.push(failedAttempt);
           try { await options.onAttempt?.(failedAttempt); }
           catch (persistenceError) { throw errorWithAttempts(persistenceError, attempts); }
@@ -1394,7 +1395,7 @@ export interface ScheduledAgentOptions {
 
 export type ScheduledAgentResult =
   | { id: string; ok: true; value: JsonValue }
-  | { id: string; ok: false; error: { code: string; message: string } };
+  | { id: string; ok: false; error: AgentAttemptError };
 
 export interface ScheduledAgentInput {
   id: string;
@@ -1532,7 +1533,7 @@ export class FairAgentScheduler {
         const value = await this.runner({ id, runId, tuiIndex, ...(parentId ? { parentId } : {}), prompt, options: node.options, signal: node.controller.signal, setSteer: (handler) => { node.steer = handler; } });
         this.#settle(node, { id, ok: true, value });
       } catch (error) {
-        this.#settle(node, { id, ok: false, error: { code: scheduledErrorCode(error, node.controller.signal.aborted), message: errorText(error) } });
+        this.#settle(node, { id, ok: false, error: { code: scheduledErrorCode(error, node.controller.signal.aborted), message: errorText(error), ...providerErrorFields(error) } });
       }
     };
     this.#nodes.set(id, node);
@@ -1654,7 +1655,7 @@ export class FairAgentScheduler {
     const resultTool = defineTool({
       name: "get_subagent_result", label: "Child Result", description: "Wait for a direct child and return its result once; repeated retrieval fails with AGENT_RESULT_COLLECTED",
       parameters: Type.Object({ id: Type.String() }),
-      outputSchema: Type.Object({ id: Type.String(), ok: Type.Boolean(), value: Type.Optional(Type.Unknown()), error: Type.Optional(Type.Object({ code: Type.String(), message: Type.String() })) }),
+      outputSchema: Type.Object({ id: Type.String(), ok: Type.Boolean(), value: Type.Optional(Type.Unknown()), error: Type.Optional(WORKFLOW_ERROR_OUTPUT) }),
       execute: async (_id, params) => { const value = await this.result(parentId, params.id); if (!value.ok && value.error.code === "BUDGET_EXHAUSTED") throw new WorkflowError("BUDGET_EXHAUSTED", value.error.message); return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value, structuredContent: value }; }
     });
     const steerTool = defineTool({
@@ -1731,7 +1732,7 @@ export class FairAgentScheduler {
       const item = run.queue.shift() as { node?: ScheduledNode; start: () => void };
       if (item.node) {
         try { run.beforeLaunch?.(); }
-        catch (error) { this.#settle(item.node, { id: item.node.id, ok: false, error: { code: scheduledErrorCode(error, item.node.controller.signal.aborted), message: errorText(error) } }); continue; }
+        catch (error) { this.#settle(item.node, { id: item.node.id, ok: false, error: { code: scheduledErrorCode(error, item.node.controller.signal.aborted), message: errorText(error), ...providerErrorFields(error) } }); continue; }
       }
       run.active += 1; this.#active += 1; item.start();
     }

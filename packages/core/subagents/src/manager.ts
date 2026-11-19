@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { chmod, link, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { addAccounting, errorCode, errorText, finiteNumber, isNodeError, isThinkingLevel, jsonValue, object, loadingRegistry, physicalModel, resolveModelReference, localAgentTransport, modelCapability, resolveAgentResourcePolicy, resolveWorkflowSettings, sanitizeDisplayText, sumAccounting, structuralPath, validateModelAliasAvailability, WorkflowAgentExecutor, WorkflowError, workflowSettingsPath, type AgentAccounting, type AgentAttempt, type AgentAttemptSummary, type PreparedAgentConfiguration, type AgentExecutionOptions, type AgentExecutionRoot, type AgentProgress, type AgentToolCallProgress, type JsonSchema, type JsonValue, type ModelSpec, type WorkflowAgentSessionState, type WorkflowRunContext, SerialLane } from "../../src/index.js";
-import { decodePreparedAgentConfiguration } from "../../src/decoders.js";
+import { addAccounting, errorCode, errorText, finiteNumber, isNodeError, isThinkingLevel, jsonValue, object, loadingRegistry, physicalModel, providerErrorFields, resolveModelReference, localAgentTransport, modelCapability, resolveAgentResourcePolicy, resolveWorkflowSettings, sanitizeDisplayText, sumAccounting, structuralPath, validateModelAliasAvailability, WorkflowAgentExecutor, WorkflowError, workflowSettingsPath, type AgentAccounting, type AgentAttempt, type AgentAttemptError, type AgentAttemptSummary, type PreparedAgentConfiguration, type AgentExecutionOptions, type AgentExecutionRoot, type AgentProgress, type AgentToolCallProgress, type JsonSchema, type JsonValue, type ModelSpec, type WorkflowAgentSessionState, type WorkflowRunContext, SerialLane } from "../../src/index.js";
+import { decodeAgentError, decodePreparedAgentConfiguration } from "../../src/decoders.js";
 import { atomicJson, json as readJson, processAlive } from "../../src/persistence.js";
 import { accountingValue, activityValue, legacyAccountingValue, worktreeValue } from "./decode.js";
 import { SUBAGENT_ATTEMPT_DETAILS_LIMIT, SUBAGENT_MAX_RETRIES, SUBAGENT_SYSTEM_PROMPT_LIMIT, SUBAGENTS_TOOL_NAMES, normalizeSubagentRunRequest, type SubagentRetryEdits, type SubagentInspectRequest, type SubagentLiveness, type SubagentAttemptActionData, type SubagentManager, type SubagentManagerContext, type SubagentManagerDependencies, type SubagentNotification, type SubagentOwnerMarker, type SubagentProgress, type SubagentRunRequest, type SubagentStatus } from "./contracts.js";
@@ -38,7 +38,7 @@ const EXCLUDED_TOOLS = new Set<string>([
 
 type ModelIdentity = { provider: string; id: string };
 type SubagentState = SubagentStatus["state"];
-type SubagentFailure = { code: string; message: string };
+type SubagentFailure = AgentAttemptError;
 type PersistedSubagentStatus = SubagentStatus & { startedAt: number; finishedAt?: number; owner?: SubagentOwnerMarker; worktreeContext?: SubagentWorktreeContext };
 type SubagentSession = NonNullable<AgentAttempt["liveSession"]>;
 type SubagentSessionLifecycle = Pick<SubagentSession, "abort" | "dispose">;
@@ -342,7 +342,7 @@ function checkedId(request: Readonly<{ id: string }>): string {
 }
 
 function failureFrom(error: unknown): SubagentFailure {
-  return { code: errorCode(error) ?? "AGENT_FAILED", message: errorText(error) };
+  return { code: errorCode(error) ?? "AGENT_FAILED", message: errorText(error), ...providerErrorFields(error) };
 }
 
 function internalStorageError(error: unknown, operation: string): WorkflowError {
@@ -404,10 +404,7 @@ function persistedStatus(run: LiveRun): PersistedSubagentStatus {
 }
 
 function decodeFailure(value: unknown): SubagentFailure | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  const record = value as { message?: unknown };
-  const code = errorCode(value);
-  return code && typeof record.message === "string" ? { code, message: record.message } : undefined;
+  return errorCode(value) ? decodeAgentError(value) : undefined;
 }
 function recordValue(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -495,7 +492,7 @@ function attemptSummaryValue(value: unknown): AgentAttemptSummary | undefined {
     attempt,
     transport: boundedAttemptText(transport),
     ...(session === undefined ? {} : { session }),
-    ...(error === undefined ? {} : { error: { code: boundedAttemptText(error.code), message: boundedAttemptText(error.message) } }),
+    ...(error === undefined ? {} : { error: { ...error, code: boundedAttemptText(error.code), message: boundedAttemptText(error.message) } }),
     accounting: { ...accounting },
     setup: boundedAttemptSetup(setup),
   };

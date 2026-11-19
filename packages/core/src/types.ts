@@ -1,6 +1,8 @@
 import type { CreateAgentSessionOptions, InlineExtension, SessionManager, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { addSpeed } from "./agent-speed.js";
+import { decodeProviderError, type WorkflowProviderError } from "./provider-error.js";
+export type { WorkflowProviderError } from "./provider-error.js";
 export const RUN_STATES = ["queued", "running", "pausing", "paused", "awaiting_input", "completed", "failed", "stopped", "interrupted", "budget_exhausted"] as const;
 export const AGENT_STATES = ["queued", "running", "waiting_for_child", "paused", "retrying", "completed", "failed", "cancelled"] as const;
 export type RunState = (typeof RUN_STATES)[number];
@@ -75,7 +77,7 @@ export const BUDGET_EVENT_TYPES = ["soft_crossed", "hard_overrun", "hard_exhaust
 export type BudgetEventType = (typeof BUDGET_EVENT_TYPES)[number];
 export interface BudgetEvent { type: BudgetEventType; budgetVersion: number; dimensions: readonly BudgetDimension[]; usage: WorkflowBudgetUsage; limits: WorkflowBudget; at: number; proposalId?: string; previous?: WorkflowBudget; proposed?: WorkflowBudget }
 export interface BudgetApprovalRequest { kind: "budget"; proposalId: string; runId: string; consumed: WorkflowBudgetUsage; previous: WorkflowBudget; proposed: WorkflowBudget; budgetVersion: number; foreground?: boolean }
-export interface WorkflowErrorShape { code: WorkflowErrorCode; message: string; failedAt?: string }
+export interface WorkflowErrorShape { code: WorkflowErrorCode; message: string; provider?: WorkflowProviderError; failedAt?: string }
 export interface WorkflowEventBase { runId: string; sessionId: string; workflowName: string; cwd: string; runDirectory: string; timestamp: number }
 export type WorkflowRunStartedEvent = WorkflowEventBase;
 export type WorkflowRunResumedEvent = WorkflowEventBase;
@@ -144,7 +146,7 @@ export function sumAccounting(values: Iterable<AgentAccounting>): AgentAccountin
 }
 export interface AgentSetupSummary { hookNames: readonly string[]; model: ModelSpec; tools: readonly string[]; cwd: string; resourceSelectors?: AgentResourceInspection }
 
-export interface AgentAttemptError { code: string; message: string }
+export type AgentAttemptError = { code: string; message: string; provider?: WorkflowProviderError };
 export interface AgentAttemptSummary { attempt: number; transport: string; session?: WorkflowAgentSessionReference; setup: AgentSetupSummary; error?: AgentAttemptError; accounting: AgentAccounting }
 export interface WorkflowWorktreeCreatedEvent extends WorkflowEventBase { owner: string; branch: string; path: string; base: string }
 export interface WorkflowWorktreeReference { readonly path: string; readonly branch: string }
@@ -255,7 +257,7 @@ type DefinedWorkflowFunction<InputSchema extends TSchema, OutputSchema extends T
 export function defineWorkflowFunction<InputSchema extends TSchema, OutputSchema extends TSchema, Run extends TypedWorkflowFunction<InputSchema, OutputSchema>["run"]>(workflowFunction: DefinedWorkflowFunction<InputSchema, OutputSchema, Run>): DefinedWorkflowFunction<InputSchema, OutputSchema, Run> { return workflowFunction; }
 export interface WorkflowAgentSessionReference { readonly transport: string; readonly sessionId: string; readonly locator?: JsonValue }
 export interface WorkflowAgentSessionStats { readonly tokens: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number; readonly total: number }; readonly cost: number }
-export interface WorkflowAgentMessage { readonly role: string; readonly content?: unknown; readonly stopReason?: string; readonly errorMessage?: string; readonly usage?: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number; readonly cost: { readonly total: number } } }
+export interface WorkflowAgentMessage { readonly role: string; readonly content?: unknown; readonly provider?: string; readonly model?: string; readonly responseId?: string; readonly stopReason?: string; readonly errorMessage?: string; readonly usage?: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number; readonly cost: { readonly total: number } } }
 export interface WorkflowAgentSessionState { readonly model: ModelSpec; readonly thinking?: ModelSpec["thinking"]; readonly tools: readonly string[]; readonly systemPrompt?: string }
 export interface WorkflowAgentSessionEvent { readonly type: string; readonly state?: Readonly<WorkflowAgentSessionState>; readonly message?: WorkflowAgentMessage; readonly assistantMessageEvent?: { readonly type: string; readonly delta?: string }; readonly toolCallId?: string; readonly toolName?: string; readonly isError?: boolean }
 export type LiveSessionHandoffState = "local-running" | "handoff-pending" | "herdr-running" | "returning-local" | "completed";
@@ -391,7 +393,14 @@ export interface WorkflowJournal { get(path: string): JsonValue | undefined; put
 // The brand keeps instanceof working across the bundled extension entries, which each inline their own copy of this class.
 const WORKFLOW_ERROR_BRAND = Symbol.for("pi-extensible-workflows.workflow-error");
 export class WorkflowError extends Error {
-  constructor(public readonly code: WorkflowErrorCode, message: string) { super(message); this.name = "WorkflowError"; (this as unknown as Record<symbol, boolean>)[WORKFLOW_ERROR_BRAND] = true; }
+  declare readonly provider?: WorkflowProviderError;
+  constructor(public readonly code: WorkflowErrorCode, message: string, provider?: WorkflowProviderError) {
+    super(message);
+    this.name = "WorkflowError";
+    const metadata = decodeProviderError(provider);
+    if (metadata) this.provider = metadata;
+    (this as unknown as Record<symbol, boolean>)[WORKFLOW_ERROR_BRAND] = true;
+  }
   static [Symbol.hasInstance](value: unknown): boolean {
     if (Function.prototype[Symbol.hasInstance].call(this, value)) return true;
     // Subclasses do not own the brand marker, so they keep plain prototype-chain semantics.

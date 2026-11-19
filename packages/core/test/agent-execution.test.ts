@@ -675,7 +675,7 @@ void test("fails native terminal provider errors before structured finalization"
   assert.equal((locator as { sessionFile?: string }).sessionFile, "/sessions/terminal.jsonl");
   const failedAttempt = attempts[0];
   assert.ok(failedAttempt);
-  assert.deepEqual(failedAttempt.error, { code: "AGENT_FAILED", message: errorMessage });
+  assert.deepEqual(failedAttempt.error, { code: "AGENT_FAILED", message: errorMessage, provider: { stopReason: "error", disposition: "unknown" } });
 });
 void test("falls back when a terminal provider error omits errorMessage", async () => {
   const messages = [{ ...assistant(""), stopReason: "error" }];
@@ -686,7 +686,7 @@ void test("falls back when a terminal provider error omits errorMessage", async 
     attempts = (error as WorkflowError & { attempts?: typeof attempts }).attempts;
     return error.code === "AGENT_FAILED" && error.message === "Workflow agent session ended with a terminal provider error";
   });
-  assert.deepEqual(attempts?.[0]?.error, { code: "AGENT_FAILED", message: "Workflow agent session ended with a terminal provider error" });
+  assert.deepEqual(attempts?.[0]?.error, { code: "AGENT_FAILED", message: "Workflow agent session ended with a terminal provider error", provider: { stopReason: "error", disposition: "unknown" } });
 });
 
 void test("preserves a prior report after an empty aborted assistant turn", async () => {
@@ -738,7 +738,7 @@ void test("retries native terminal errors as fresh workflow attempts", async () 
   assert.deepEqual(result.value, { answer: 42 });
   assert.deepEqual(promptsByAttempt.map((prompts) => prompts.length), [1, 2]);
   assert.deepEqual(result.attempts.map(({ session }) => session?.sessionId), ["terminal-retry-1", "terminal-retry-2"]);
-  assert.deepEqual(result.attempts[0]?.error, { code: "AGENT_FAILED", message: errorMessage });
+  assert.deepEqual(result.attempts[0]?.error, { code: "AGENT_FAILED", message: errorMessage, provider: { stopReason: "error", disposition: "unknown" } });
   assert.deepEqual(result.attempts[1]?.result, { answer: 42 });
 });
 void test("continues terminal provider errors in the same native session when recovery retries", async () => {

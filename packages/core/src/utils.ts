@@ -73,6 +73,9 @@ export function errorCode(error: unknown): WorkflowErrorCode | undefined {
   if (!object(error)) return undefined;
   return isWorkflowErrorCode(error.code) ? error.code : undefined;
 }
+export function providerErrorFields(error: unknown): Pick<WorkflowError, "provider"> {
+  return error instanceof WorkflowError && error.provider !== undefined ? { provider: error.provider } : {};
+}
 const WORKFLOW_AUTHORED_ERROR = Symbol("workflowAuthoredError");
 export function markWorkflowAuthored(error: WorkflowError, authored = false): WorkflowError {
   if (authored) Object.defineProperty(error, WORKFLOW_AUTHORED_ERROR, { value: true });

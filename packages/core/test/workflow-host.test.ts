@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -340,6 +340,61 @@ void test("a run whose worker cannot be started is persisted as failed, not left
   assert.equal(loaded.run.error?.code, "INTERNAL_ERROR");
   assert.match(loaded.run.error.message, /not-a-directory/);
 });
+void test("workflow provider refusal reaches a script catch, the tool error, and persisted status", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "pi-workflow-provider-refusal-"));
+  t.after(() => { rmSync(home, { force: true, recursive: true }); });
+  const message = "Request refused by the provider";
+  const provider = { provider: "openrouter", model: "recorded/model", responseId: "gen-synthetic-workflow", stopReason: "error", disposition: "unknown" };
+  const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> = [];
+  let toolResultHandler: ((event: { toolName: string; toolCallId: string; isError: boolean }) => Promise<unknown>) | undefined;
+  let prompts = 0;
+  const transport = testTransport(async () => ({
+    sessionId: "refusal",
+    messages: [{ role: "assistant", provider: provider.provider, model: provider.model, responseId: provider.responseId, stopReason: "error", errorMessage: message }],
+    getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
+    async prompt() { prompts += 1; },
+    dispose() {},
+  }));
+  workflowExtension(testExtensionApi({
+    registerTool(tool: (typeof tools)[number]) { tools.push(tool); }, registerCommand() {},
+    on(name: string, handler: unknown) { if (name === "tool_result") toolResultHandler = handler as typeof toolResultHandler; },
+    getThinkingLevel: () => "medium", getActiveTools: () => ["workflow"],
+  }), home, async () => {}, transport);
+  const workflow = tools.find(({ name }) => name === "workflow");
+  const statusTool = tools.find(({ name }) => name === "workflow_status");
+  assert.ok(workflow && statusTool && toolResultHandler);
+  const context = { cwd: home, model: { provider: "openai", id: "gpt" }, sessionManager: { getSessionId: () => "session" } };
+  const script = `
+    try { return await parallel("batch", { child: () => agent("work") }); }
+    catch (error) {
+      if (error.code !== "AGENT_FAILED" || error.message !== args.message || error.provider?.responseId !== args.responseId) {
+        throw new Error("Provider error lost in the workflow worker");
+      }
+      throw error;
+    }`;
+  await assert.rejects(workflow.execute("refusal", { name: "refusal", script, args: { message, responseId: provider.responseId }, foreground: true }, new AbortController().signal, undefined, context), (error: unknown) => {
+    assert.ok(error instanceof WorkflowError);
+    assert.equal(error.code, "AGENT_FAILED");
+    assert.deepEqual(error.provider, provider);
+    return true;
+  });
+  assert.equal(prompts, 1);
+  const [runId] = await listRunIds(home, "session", home);
+  assert.ok(runId);
+  const { run } = await new RunStore(home, "session", runId, home).load();
+  const expectedError = { code: "AGENT_FAILED", message, provider };
+  assert.equal(run.state, "failed");
+  assert.deepEqual(run.error, { ...expectedError, failedAt: run.failedAt });
+  const [agent] = run.agents;
+  assert.ok(agent);
+  assert.equal(agent.attempts, 1);
+  assert.deepEqual(agent.attemptDetails?.map(({ error }) => error), [expectedError]);
+  const status = decodeTestToolResult(await statusTool.execute("status", { runId }, undefined, undefined, context));
+  assert.deepEqual(decodeTestJsonRecord(status.content[0]?.text ?? "null").error, expectedError);
+  const toolResult = decodeTestToolResult(await toolResultHandler({ toolName: "workflow", toolCallId: "refusal", isError: true }));
+  assert.deepEqual(decodeTestJsonRecord(toolResult.content[0]?.text ?? "null").error, expectedError);
+});
+
 void test("workflow_retry links children, replays parallel branches, inherits budgets, and supports retry chains", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-retry-tool-"));
   let sessions = 0;

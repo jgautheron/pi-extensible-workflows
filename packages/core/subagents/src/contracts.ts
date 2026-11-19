@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { WorkflowError } from "../../src/types.js";
+import { WorkflowError, type AgentAttemptError } from "../../src/types.js";
+import { WORKFLOW_ERROR_OUTPUT } from "../../src/provider-error.js";
 import type { AgentActivity, AgentAccounting, AgentAttemptSummary, AgentExecutionOptions, AgentExecutionResult, AgentExecutionRoot, AgentProgress, AgentToolCallProgress, AgentTransport, LiveSessionHandoff, PreparedAgentSession, WorkflowAgentSession, WorkflowAgentSessionReference } from "../../src/index.js";
 import { validateAgentOptions } from "../../src/validation.js";
 import type { Static } from "typebox";
@@ -71,7 +72,7 @@ export const SUBAGENT_STATUS_OUTPUT = Type.Object({
   attempts: Type.Optional(Type.Number()),
   attemptDetails: Type.Optional(Type.Array(Type.Unknown())),
   worktree: Type.Optional(Type.Object({ path: Type.String(), branch: Type.String() })),
-  error: Type.Optional(Type.Object({ code: Type.String(), message: Type.String() })),
+  error: Type.Optional(WORKFLOW_ERROR_OUTPUT),
   progress: Type.Optional(Type.Unknown()),
   value: Type.Optional(Type.Unknown()),
 });
@@ -107,7 +108,7 @@ export interface SubagentStatus {
   readonly startedAt?: number;
   readonly finishedAt?: number;
   readonly worktree?: { readonly path: string; readonly branch: string };
-  readonly error?: { readonly code: string; readonly message: string };
+  readonly error?: Readonly<AgentAttemptError>;
   readonly progress?: SubagentProgress;
   readonly attempts?: number;
   readonly attemptDetails?: readonly AgentAttemptSummary[];
@@ -116,7 +117,7 @@ export interface SubagentNotification {
   readonly id: string;
   readonly label?: string;
   readonly state: "completed" | "failed";
-  readonly error?: { readonly code: string; readonly message: string };
+  readonly error?: Readonly<AgentAttemptError>;
 }
 export interface SubagentManagerContext {
   readonly toolCallId: string;

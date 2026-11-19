@@ -1,3 +1,5 @@
+import type { WorkflowProviderError } from "../provider-error.js";
+
 export type RuntimeJsonValue = null | boolean | number | string | RuntimeJsonValue[] | { [key: string]: RuntimeJsonValue };
 export type RuntimeJsonSchema = { [key: string]: RuntimeJsonValue };
 
@@ -42,6 +44,7 @@ export interface RuntimeAgentProviderFailure {
   readonly provider: string;
   readonly model: string;
   readonly error: string;
+  readonly metadata?: WorkflowProviderError;
 }
 
 export class RuntimeAgentProviderError extends Error {
